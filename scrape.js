@@ -83,19 +83,24 @@ function extractOrgAndVacancy(title) {
   return { organization, vacancy };
 }
 
-function parseInfoTable(contentHtml) {
+function parseInfoTableRows(contentHtml) {
   const tableMatch = contentHtml.match(/<table>[\s\S]*?<\/table>/);
-  if (!tableMatch) return {};
-  const rows = [...tableMatch[0].matchAll(/<tr>([\s\S]*?)<\/tr>/g)];
-  const info = {};
-  for (const row of rows) {
+  if (!tableMatch) return [];
+  const trMatches = [...tableMatch[0].matchAll(/<tr>([\s\S]*?)<\/tr>/g)];
+  const rows = [];
+  for (const row of trMatches) {
     const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)];
     if (cells.length < 2) continue;
     const label = stripHtml(cells[0][1]).replace(/[:：]\s*$/, "").trim();
     const value = stripHtml(cells[1][1]).trim();
-    info[label] = value;
+    if (label && value) rows.push({ label, value });
   }
-  return info;
+  return rows;
+}
+
+function tableValue(rows, label) {
+  const row = rows.find((r) => r.label === label);
+  return row ? row.value : null;
 }
 
 async function fetchPosts(page) {
@@ -129,24 +134,26 @@ async function scrapeJobs() {
     const title = stripHtml(post.title.rendered);
     const plainText = stripHtml(post.content.rendered);
     const circularImage = extractCircularImage(post.content.rendered);
-    const table = parseInfoTable(post.content.rendered);
+    const tableRows = parseInfoTableRows(post.content.rendered);
     const { organization: titleOrg, vacancy: titleVacancy } = extractOrgAndVacancy(title);
-    const tableCategory = table["চাকরির ধরন"] ? CATEGORY_TEXT_MAP[table["চাকরির ধরন"].trim()] : null;
+    const jobType = tableValue(tableRows, "চাকরির ধরন");
+    const tableCategory = jobType ? CATEGORY_TEXT_MAP[jobType.trim()] : null;
 
     return {
       id: post.slug,
       title,
-      organization: table["প্রতিষ্ঠানের নাম"] || titleOrg || title,
+      organization: tableValue(tableRows, "প্রতিষ্ঠানের নাম") || titleOrg || title,
       logo_url: null,
       category: tableCategory || CATEGORY_MAP[categoryId] || "government",
       qualification: "any",
       published_date: post.date.slice(0, 10),
-      deadline: matchBengaliDate(table["আবেদনের শেষ তারিখ"]) || extractDeadlineFromFullText(plainText),
+      deadline: matchBengaliDate(tableValue(tableRows, "আবেদনের শেষ তারিখ")) || extractDeadlineFromFullText(plainText),
       notice_image_url: circularImage,
       apply_link: post.link,
       description: "",
-      vacancy: extractVacancyFromText(table["পদের সংখ্যা"]) ?? titleVacancy,
-      district: null
+      vacancy: extractVacancyFromText(tableValue(tableRows, "পদের সংখ্যা")) ?? titleVacancy,
+      district: null,
+      details_table: tableRows
     };
   });
 
