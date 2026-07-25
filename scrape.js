@@ -92,8 +92,11 @@ function parseInfoTableRows(contentHtml) {
     const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)];
     if (cells.length < 2) continue;
     const label = stripHtml(cells[0][1]).replace(/[:：]\s*$/, "").trim();
-    const value = stripHtml(cells[1][1]).trim();
-    if (label && value) rows.push({ label, value });
+    const rawValue = cells[1][1];
+    const value = stripHtml(rawValue).trim();
+    const hrefMatch = rawValue.match(/<a[^>]+href="([^"]+)"/);
+    const href = hrefMatch ? hrefMatch[1] : null;
+    if (label && value) rows.push({ label, value, href });
   }
   return rows;
 }
@@ -101,6 +104,11 @@ function parseInfoTableRows(contentHtml) {
 function tableValue(rows, label) {
   const row = rows.find((r) => r.label === label);
   return row ? row.value : null;
+}
+
+function tableHref(rows, label) {
+  const row = rows.find((r) => r.label === label);
+  return row ? row.href : null;
 }
 
 async function fetchPosts(page) {
@@ -118,13 +126,22 @@ async function fetchPosts(page) {
 const KNOWN_FILLER_IMAGE_ID =
   "AVvXsEgWDRSmg1-nH1_9CFx5xtrBM8MMLitrRwtlRHv5kfYxuXYawsci0kpMgk1yJxqhVZ89TMglaUvBZYEkkK4nxBLM6tZJdCuxUQ";
 
-function extractCircularImage(contentHtml) {
+function extractCircularImages(contentHtml) {
   const imgMatches = [...contentHtml.matchAll(/<img[^>]+src="([^"]+)"/g)];
-  const circularImages = imgMatches
+  const candidates = imgMatches
     .map((m) => m[1])
     .filter((src) => src.includes("blogger.googleusercontent.com"))
     .filter((src) => !src.includes(KNOWN_FILLER_IMAGE_ID));
-  return circularImages[0] ?? null;
+
+  const seen = new Set();
+  const unique = [];
+  for (const url of candidates) {
+    const filename = decodeURIComponent(url.split("/").pop().split("?")[0]);
+    if (seen.has(filename)) continue;
+    seen.add(filename);
+    unique.push(url);
+  }
+  return unique;
 }
 
 async function scrapeJobs() {
@@ -133,11 +150,16 @@ async function scrapeJobs() {
     const categoryId = post.categories.find((id) => CATEGORY_MAP[id]);
     const title = stripHtml(post.title.rendered);
     const plainText = stripHtml(post.content.rendered);
-    const circularImage = extractCircularImage(post.content.rendered);
+    const circularImages = extractCircularImages(post.content.rendered);
     const tableRows = parseInfoTableRows(post.content.rendered);
     const { organization: titleOrg, vacancy: titleVacancy } = extractOrgAndVacancy(title);
     const jobType = tableValue(tableRows, "চাকরির ধরন");
     const tableCategory = jobType ? CATEGORY_TEXT_MAP[jobType.trim()] : null;
+
+    const applyLink =
+      tableHref(tableRows, "আবেদনের ঠিকানা") ||
+      tableHref(tableRows, "অফিসিয়াল ওয়েব সাইট") ||
+      post.link;
 
     return {
       id: post.slug,
@@ -148,8 +170,8 @@ async function scrapeJobs() {
       qualification: "any",
       published_date: post.date.slice(0, 10),
       deadline: matchBengaliDate(tableValue(tableRows, "আবেদনের শেষ তারিখ")) || extractDeadlineFromFullText(plainText),
-      notice_image_url: circularImage,
-      apply_link: post.link,
+      notice_images: circularImages,
+      apply_link: applyLink,
       description: "",
       vacancy: extractVacancyFromText(tableValue(tableRows, "পদের সংখ্যা")) ?? titleVacancy,
       district: null,
