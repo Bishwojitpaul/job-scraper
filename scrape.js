@@ -3,30 +3,35 @@ const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // শুধু script-এ, কখনো app-এ না
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 const WP_BASE = "https://jobsnoticebd.com/wp-json/wp/v2";
 
-// jobsnoticebd.com category id -> আমাদের app category slug
 const CATEGORY_MAP = {
-  6: "government",  // সরকারি চাকরি
-  8: "government",  // ডিফেন্স চাকরি
-  38: "government", // বিশ্ববিদ্যালয় চাকরি
-  7: "private",      // বেসরকারি চাকরি
-  1: "private",       // ঔষধ কোম্পানি চাকরি
-  21: "bank",         // ব্যাংক চাকরি
-  9: "ngo"            // এনজিও চাকরি
+  6: "government", 8: "government", 38: "government",
+  7: "private", 1: "private",
+  21: "bank",
+  9: "ngo"
 };
 const RELEVANT_CATEGORY_IDS = Object.keys(CATEGORY_MAP).join(",");
+
+const CATEGORY_TEXT_MAP = {
+  "সরকারি": "government",
+  "বেসরকারি": "private",
+  "ব্যাংক": "bank",
+  "এনজিও": "ngo",
+  "প্রবাসী": "expatriate",
+  "মন্ত্রণালয়": "ministry"
+};
 
 function stripHtml(html) {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<[^>]+>/g, " ")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)))
     .replace(/&nbsp;/g, " ")
-    .replace(/&#8230;/g, "…")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -41,17 +46,28 @@ const BN_MONTHS = [
   "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"
 ];
 
-function extractDeadline(plainText) {
+function matchBengaliDate(text) {
+  if (!text) return null;
   const monthPattern = BN_MONTHS.join("|");
-  const match = plainText.match(
-    new RegExp(`(আবেদনের\\s*শেষ\\s*তারিখ|শেষ\\s*তারিখ)\\s*[:।]?\\s*([০-৯]{1,2})\\s*(${monthPattern})\\s*([০-৯]{4})`)
-  );
+  const match = text.match(new RegExp(`([০-৯]{1,2})\\s*(${monthPattern})\\s*([০-৯]{4})`));
   if (!match) return null;
-  const day = toLatinDigits(match[2]).padStart(2, "0");
-  const monthIndex = BN_MONTHS.indexOf(match[3]);
-  const year = toLatinDigits(match[4]);
+  const day = toLatinDigits(match[1]).padStart(2, "0");
+  const monthIndex = BN_MONTHS.indexOf(match[2]);
+  const year = toLatinDigits(match[3]);
   const iso = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${day}`;
   return isNaN(Date.parse(iso)) ? null : iso;
+}
+
+function extractDeadlineFromFullText(plainText) {
+  const match = plainText.match(/(আবেদনের\s*শেষ\s*তারিখ|শেষ\s*তারিখ)\s*[:।]?\s*(.{0,30})/);
+  return match ? matchBengaliDate(match[2]) : null;
+}
+
+function extractVacancyFromText(value) {
+  if (!value) return null;
+  const normalized = toLatinDigits(value);
+  const match = normalized.match(/(\d+)\s*জন/) || normalized.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
 }
 
 function extractOrgAndVacancy(title) {
@@ -67,6 +83,21 @@ function extractOrgAndVacancy(title) {
   return { organization, vacancy };
 }
 
+function parseInfoTable(contentHtml) {
+  const tableMatch = contentHtml.match(/<table>[\s\S]*?<\/table>/);
+  if (!tableMatch) return {};
+  const rows = [...tableMatch[0].matchAll(/<tr>([\s\S]*?)<\/tr>/g)];
+  const info = {};
+  for (const row of rows) {
+    const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)];
+    if (cells.length < 2) continue;
+    const label = stripHtml(cells[0][1]).replace(/[:：]\s*$/, "").trim();
+    const value = stripHtml(cells[1][1]).trim();
+    info[label] = value;
+  }
+  return info;
+}
+
 async function fetchPosts(page) {
   const { data } = await axios.get(`${WP_BASE}/posts`, {
     params: {
@@ -79,28 +110,42 @@ async function fetchPosts(page) {
   return data;
 }
 
+const KNOWN_FILLER_IMAGE_ID =
+  "AVvXsEgWDRSmg1-nH1_9CFx5xtrBM8MMLitrRwtlRHv5kfYxuXYawsci0kpMgk1yJxqhVZ89TMglaUvBZYEkkK4nxBLM6tZJdCuxUQ";
+
+function extractCircularImage(contentHtml) {
+  const imgMatches = [...contentHtml.matchAll(/<img[^>]+src="([^"]+)"/g)];
+  const circularImages = imgMatches
+    .map((m) => m[1])
+    .filter((src) => src.includes("blogger.googleusercontent.com"))
+    .filter((src) => !src.includes(KNOWN_FILLER_IMAGE_ID));
+  return circularImages[0] ?? null;
+}
+
 async function scrapeJobs() {
-  const posts = await fetchPosts(1); // প্রতিবার সাম্প্রতিক ৫০টা চেক করে, upsert করলে ডুপ্লিকেট হয় না
+  const posts = await fetchPosts(1);
   const jobs = posts.map((post) => {
     const categoryId = post.categories.find((id) => CATEGORY_MAP[id]);
     const title = stripHtml(post.title.rendered);
     const plainText = stripHtml(post.content.rendered);
-    const image = post._embedded?.["wp:featuredmedia"]?.[0]?.source_url ?? null;
-    const { organization, vacancy } = extractOrgAndVacancy(title);
+    const circularImage = extractCircularImage(post.content.rendered);
+    const table = parseInfoTable(post.content.rendered);
+    const { organization: titleOrg, vacancy: titleVacancy } = extractOrgAndVacancy(title);
+    const tableCategory = table["চাকরির ধরন"] ? CATEGORY_TEXT_MAP[table["চাকরির ধরন"].trim()] : null;
 
     return {
       id: post.slug,
       title,
-      organization: organization || title,
+      organization: table["প্রতিষ্ঠানের নাম"] || titleOrg || title,
       logo_url: null,
-      category: CATEGORY_MAP[categoryId] ?? "government",
+      category: tableCategory || CATEGORY_MAP[categoryId] || "government",
       qualification: "any",
       published_date: post.date.slice(0, 10),
-      deadline: extractDeadline(plainText),
-      notice_image_url: image,
+      deadline: matchBengaliDate(table["আবেদনের শেষ তারিখ"]) || extractDeadlineFromFullText(plainText),
+      notice_image_url: circularImage,
       apply_link: post.link,
       description: "",
-      vacancy,
+      vacancy: extractVacancyFromText(table["পদের সংখ্যা"]) ?? titleVacancy,
       district: null
     };
   });
