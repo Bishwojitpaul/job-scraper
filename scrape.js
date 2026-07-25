@@ -42,7 +42,6 @@ const BN_MONTHS = [
 ];
 
 function extractDeadline(plainText) {
-  // আসল পোস্টে যেভাবে লেখা থাকে: "আবেদনের শেষ তারিখ: ০৬ সেপ্টেম্বর ২০২৬" (বাংলা মাসের নাম দিয়ে, স্ল্যাশ না)
   const monthPattern = BN_MONTHS.join("|");
   const match = plainText.match(
     new RegExp(`(আবেদনের\\s*শেষ\\s*তারিখ|শেষ\\s*তারিখ)\\s*[:।]?\\s*([০-৯]{1,2})\\s*(${monthPattern})\\s*([০-৯]{4})`)
@@ -55,9 +54,6 @@ function extractDeadline(plainText) {
   return isNaN(Date.parse(iso)) ? null : iso;
 }
 
-// jobsnoticebd.com-এর টাইটেলগুলো প্রায় সবসময় এই প্যাটার্নে থাকে:
-// "<N> পদে <প্রতিষ্ঠানের নাম> (ABBR) নিয়োগ/পরীক্ষার বিজ্ঞপ্তি <year> প্রকাশ"
-// এখান থেকে পদসংখ্যা আর প্রতিষ্ঠানের নাম বের করা যায়।
 function extractOrgAndVacancy(title) {
   const normalizedDigits = toLatinDigits(title);
   const vacancyMatch = normalizedDigits.match(/(\d+)\s*পদে/);
@@ -95,7 +91,7 @@ async function scrapeJobs() {
     return {
       id: post.slug,
       title,
-      organization: organization || title, // প্যাটার্ন না মিললে পুরো টাইটেলই থাক
+      organization: organization || title,
       logo_url: null,
       category: CATEGORY_MAP[categoryId] ?? "government",
       qualification: "any",
@@ -115,15 +111,3 @@ async function scrapeJobs() {
 }
 
 scrapeJobs();
-```
-
-`package.json`:
-```json
-{
-  "name": "job-scraper",
-  "type": "commonjs",
-  "dependencies": {
-    "axios": "^1.7.0",
-    "@supabase/supabase-js": "^2.45.0"
-  }
-}
