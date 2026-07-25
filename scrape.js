@@ -99,7 +99,7 @@ async function scrapeJobs() {
       deadline: extractDeadline(plainText),
       notice_image_url: image,
       apply_link: post.link,
-      description: plainText.slice(0, 4000),
+      description: "",
       vacancy,
       district: null
     };
