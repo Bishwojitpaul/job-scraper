@@ -1,6 +1,3 @@
-`scrape.js`:
-
-```js
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -130,4 +127,3 @@ scrapeJobs();
     "@supabase/supabase-js": "^2.45.0"
   }
 }
-```
